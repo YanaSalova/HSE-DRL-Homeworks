@@ -25,7 +25,8 @@ BATCH_SIZE = 64
 MIN_TRANSITIONS_PER_UPDATE = 2048
 MIN_EPISODES_PER_UPDATE = 4
 
-ITERATIONS = 1000
+ITERATIONS = 2000
+SEED = 42
 
     
 def compute_lambda_returns_and_gae(trajectory):
@@ -50,17 +51,35 @@ class Actor(nn.Module):
         super().__init__()
         # Advice: use same log_sigma for all states to improve stability
         # You can do this by defining log_sigma as nn.Parameter(torch.zeros(...))
-        self.model = None
-        self.sigma = None
+        self.model = nn.Sequential(
+            nn.Linear(state_dim, 256),
+            nn.ELU(),
+            nn.Linear(256, 256),
+            nn.ELU(),
+            nn.Linear(256, action_dim)
+        )
+        self.sigma = nn.Parameter(torch.zeros(action_dim))
+        
+    def forward(self, x):
+        return self.model(x)
         
     def compute_proba(self, state, action):
         # Returns probability of action according to current policy and distribution of actions
-        return None
+        action_mean = self.model(state)
+        action_sigma = torch.exp(self.sigma).unsqueeze(0)
+        dist = Normal(action_mean, action_sigma) 
+        action_probs = torch.exp(dist.log_prob(action).sum(-1))
+        return action_probs, dist
         
     def act(self, state):
         # Returns an action (with tanh), not-transformed action (without tanh) and distribution of non-transformed actions
         # Remember: agent is not deterministic, sample actions from distribution (e.g. Gaussian)
-        return None
+        action_mean = self.model(state)
+        action_sigma = torch.exp(self.sigma).unsqueeze(0)
+        dist = Normal(action_mean, action_sigma) 
+        action_sample = dist.sample()
+        action = torch.tanh(action_sample)
+        return action, action_sample, dist
         
         
 class Critic(nn.Module):
@@ -106,6 +125,28 @@ class PPO:
             
             # TODO: Update actor here            
             # TODO: Update critic here
+            cur_proba, dist = self.actor.compute_proba(s, a)  
+            ratio = cur_proba / op  
+            clipped_ratio = torch.clamp(ratio, 1.0 - CLIP, 1.0 + CLIP)  
+            surrogate1 = ratio * adv         
+            surrogate2 = clipped_ratio * adv
+            actor_loss_terms = torch.min(surrogate1, surrogate2) 
+            loss_actor = -actor_loss_terms.mean()
+            entropy = dist.entropy().mean()  
+            loss_actor = loss_actor - ENTROPY_COEF * entropy
+
+         
+            self.actor_optim.zero_grad()
+            loss_actor.backward()
+            torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 0.5)
+            self.actor_optim.step()
+            pred_values = self.critic.get_value(s).view(-1) 
+            loss_critic = F.smooth_l1_loss(pred_values, v)
+            self.critic_optim.zero_grad()
+            loss_critic.backward()
+            torch.nn.utils.clip_grad_norm_(self.critic.parameters(), 0.5)
+            self.critic_optim.step()
+            
             
             
     def get_value(self, state):
@@ -122,7 +163,7 @@ class PPO:
         return action.cpu().numpy()[0], pure_action.cpu().numpy()[0], prob.cpu().item()
 
     def save(self):
-        torch.save(self.actor, "agent.pkl")
+        torch.save(self.actor.model, "agent.pkl")
 
 
 def evaluate_policy(env, agent, episodes=5):
@@ -152,6 +193,9 @@ def sample_episode(env, agent):
     return compute_lambda_returns_and_gae(trajectory)
 
 if __name__ == "__main__":
+    np.random.seed(SEED)
+    random.seed(SEED)
+    torch.manual_seed(SEED)
     env = make(ENV_NAME)
     ppo = PPO(state_dim=env.observation_space.shape[0], action_dim=env.action_space.shape[0])
     state = env.reset()
