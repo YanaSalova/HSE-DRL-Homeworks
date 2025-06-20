@@ -6,11 +6,11 @@ import torch
 
 class Agent:
     def __init__(self):
-        self.model = torch.load(__file__[:-8] + "/agent.pkl", map_loacation="cpu")
+        self.model = torch.load(__file__[:-8] + "/agent.pkl", map_location="cpu")
         
     def act(self, state):
         state = torch.tensor(np.array(state))
-        return 0 # TODO
+        return self.model(state) # TODO
 
     def reset(self):
         pass

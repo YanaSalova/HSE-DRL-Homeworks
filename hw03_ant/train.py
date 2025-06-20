@@ -16,7 +16,8 @@ ACTOR_LR = 2e-4
 DEVICE = "cuda"
 BATCH_SIZE = 128
 ENV_NAME = "AntBulletEnv-v0"
-TRANSITIONS = 1000000
+TRANSITIONS = 1500000
+SEED = 42
 
 def soft_update(target, source):
     for tp, sp in zip(target.parameters(), source.parameters()):
@@ -83,8 +84,33 @@ class TD3:
             done = torch.tensor(np.array(done), device=DEVICE, dtype=torch.float)
             
             # Update critic
+            with torch.no_grad():
+                target_action = self.target_actor(next_state)
+                target_q1 = self.target_critic_1(next_state, target_action)
+                target_q2 = self.target_critic_2(next_state, target_action)
+                target_q = torch.min(target_q1, target_q2)
+                y = reward + (1 - done) * GAMMA * target_q
+
+            current_q1 = self.critic_1(state, action)
+            current_q2 = self.critic_2(state, action)
+            loss_q1 = F.mse_loss(current_q1, y)
+            loss_q2 = F.mse_loss(current_q2, y)
+
+            self.critic_1_optim.zero_grad()
+            loss_q1.backward()
+            self.critic_1_optim.step()
+
+            self.critic_2_optim.zero_grad()
+            loss_q2.backward()
+            self.critic_2_optim.step()
             
             # Update actor
+            actor_loss = -self.critic_1(state, self.actor(state)).mean()
+            self.actor_optim.zero_grad()
+            actor_loss.backward()
+            self.actor_optim.step()
+
+
             
             soft_update(self.target_critic_1, self.critic_1)
             soft_update(self.target_critic_2, self.critic_2)
@@ -96,7 +122,7 @@ class TD3:
             return self.actor(state).cpu().numpy()[0]
 
     def save(self):
-        torch.save(self.actor, "agent.pkl")
+        torch.save(self.actor.model, "agent.pkl")
 
 
 def evaluate_policy(env, agent, episodes=5):
@@ -113,6 +139,9 @@ def evaluate_policy(env, agent, episodes=5):
     return returns
 
 if __name__ == "__main__":
+    torch.manual_seed(SEED)
+    np.random.seed(SEED)
+    random.seed(SEED)
     env = make(ENV_NAME)
     test_env = make(ENV_NAME)
     td3 = TD3(state_dim=env.observation_space.shape[0], action_dim=env.action_space.shape[0])
